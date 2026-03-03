@@ -46,7 +46,7 @@ Runs garbage collection at specified intervals during training.
 ### Example Usage
 
 ```python
-from flash_stu.utils import GarbageCollection
+from flash_stu.utils.training import GarbageCollection
 
 # Initialize garbage collection manager
 gc_manager = GarbageCollection(gc_freq=500)
@@ -131,7 +131,7 @@ def linear_decay_with_warmup(
 ### Example Usage
 
 ```python
-from flash_stu.utils import linear_decay_with_warmup
+from flash_stu.utils.training import linear_decay_with_warmup
 import torch.optim as optim
 
 # Training configuration
@@ -166,7 +166,7 @@ for step in range(num_training_steps):
 ```python
 import torch.optim as optim
 from torch.optim.lr_scheduler import LambdaLR
-from flash_stu.utils import linear_decay_with_warmup
+from flash_stu.utils.training import linear_decay_with_warmup
 
 optimizer = optim.AdamW(model.parameters(), lr=1.0)
 
