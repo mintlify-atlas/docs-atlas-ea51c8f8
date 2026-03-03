@@ -1,0 +1,171 @@
+---
+title: STU Module
+description: Spectral Transform Unit (STU) module for temporal convolution operations
+---
+
+## Overview
+
+The `STU` (Spectral Transform Unit) module implements temporal convolution operations using spectral methods. It supports both low-rank approximation and full convolution modes, with optional FlashFFTConv acceleration for efficient computation.
+
+**Source:** `flash_stu/modules/stu.py`
+
+## Class Definition
+
+```python
+class STU(nn.Module):
+    def __init__(self, config, phi, n) -> None
+```
+
+### Initialization Parameters
+
+<ParamField path="config" type="FlashSTUConfig" required>
+  Configuration object containing model hyperparameters. Key attributes used:
+  - `num_eigh` (int): Number of eigenvalues/eigenvectors (K) for spectral decomposition
+  - `n_embd` (int): Embedding dimension for input and output
+  - `use_hankel_L` (bool): Whether to use Hankel-L structure (only spectral_plus)
+  - `use_approx` (bool): Enable low-rank approximation mode
+  - `use_flash_fft` (bool): Enable FlashFFTConv acceleration
+  - `torch_dtype` (torch.dtype): Data type for parameters (default: torch.bfloat16)
+</ParamField>
+
+<ParamField path="phi" type="torch.Tensor" required>
+  Spectral filter tensor with shape `(K, n)` containing eigenvectors or basis functions for convolution
+</ParamField>
+
+<ParamField path="n" type="int" required>
+  Sequence length for convolution operations
+</ParamField>
+
+## Operating Modes
+
+The STU module operates in two distinct modes based on the `use_approx` configuration:
+
+### Low-Rank Approximation Mode
+
+When `config.use_approx = True`, the module uses factorized parameters for efficient computation:
+
+#### Parameters
+
+<ResponseField name="M_inputs" type="nn.Parameter">
+  **Shape:** `(d_in, d_out)`
+  
+  Input projection matrix that contracts the input dimension before convolution
+</ResponseField>
+
+<ResponseField name="M_filters" type="nn.Parameter">
+  **Shape:** `(K, d_in)`
+  
+  Filter projection matrix that contracts the spectral filters over K and d_in dimensions
+</ResponseField>
+
+#### Forward Pass (Approximation)
+
+In this mode, the forward pass performs:
+
+1. **Project inputs:** `x_proj = x @ M_inputs` → shape `(bsz, seq_len, d_out)`
+2. **Project filters:** `phi_proj = phi @ M_filters` → shape `(K, d_in)`
+3. **Convolve:** Apply convolution to get `spectral_plus` and `spectral_minus`
+4. **Return:** `spectral_plus` if `use_hankel_L=True`, else `spectral_plus + spectral_minus`
+
+### Full Convolution Mode
+
+When `config.use_approx = False`, the module uses full parameter matrices:
+
+#### Parameters
+
+<ResponseField name="M_phi_plus" type="nn.Parameter">
+  **Shape:** `(K, d_in, d_out)`
+  
+  Projection matrix for positive spectral component
+</ResponseField>
+
+<ResponseField name="M_phi_minus" type="nn.Parameter">
+  **Shape:** `(K, d_in, d_out)`
+  
+  Projection matrix for negative spectral component. Only created when `use_hankel_L=False`
+</ResponseField>
+
+#### Forward Pass (Full)
+
+In this mode, the forward pass performs:
+
+1. **Convolve:** Apply convolution to x and phi to get `U_plus` and `U_minus`
+2. **Contract plus:** `spectral_plus = torch.tensordot(U_plus, M_phi_plus, dims=([2, 3], [0, 1]))`
+3. **Contract minus:** `spectral_minus = torch.tensordot(U_minus, M_phi_minus, dims=([2, 3], [0, 1]))` (if `use_hankel_L=False`)
+4. **Return:** `spectral_plus` if `use_hankel_L=True`, else `spectral_plus + spectral_minus`
+
+## Methods
+
+### forward
+
+```python
+def forward(self, x: torch.Tensor) -> torch.Tensor
+```
+
+Performs the spectral transform convolution.
+
+<ParamField path="x" type="torch.Tensor" required>
+  Input tensor with shape `(batch_size, seq_len, d_in)`
+</ParamField>
+
+**Returns:** `torch.Tensor` with shape `(batch_size, seq_len, d_out)`
+
+**Source:** `flash_stu/modules/stu.py:49`
+
+## FlashFFTConv Integration
+
+When `config.use_flash_fft=True` and FlashFFTConv is available, the module uses accelerated convolution:
+
+```python
+from flashfftconv import FlashFFTConv
+
+self.flash_fft = FlashFFTConv(self.n, dtype=torch.bfloat16)
+```
+
+The convolution is performed via `flash_convolve()` instead of the standard PyTorch `convolve()` function.
+
+## Usage Example
+
+```python
+import torch
+from flash_stu.config import FlashSTUConfig
+from flash_stu.modules.stu import STU
+
+# Create configuration
+config = FlashSTUConfig(
+    n_embd=1536,
+    num_eigh=24,
+    use_approx=True,
+    use_hankel_L=False,
+    use_flash_fft=True
+)
+
+# Create spectral filter (eigenvectors)
+K = config.num_eigh
+seq_len = 8192
+phi = torch.randn(K, seq_len, dtype=torch.bfloat16, device='cuda')
+
+# Initialize STU module
+stu = STU(config, phi, n=seq_len).cuda()
+
+# Forward pass
+batch_size = 4
+x = torch.randn(batch_size, seq_len, config.n_embd, 
+                dtype=torch.bfloat16, device='cuda')
+output = stu(x)  # Shape: (4, 8192, 1536)
+```
+
+## Parameter Comparison
+
+| Mode | Parameters | Total Params (d=1536, K=24) |
+|------|------------|-----------------------------|
+| **Low-Rank Approximation** | `M_inputs` + `M_filters` | `(1536 × 1536) + (24 × 1536)` = 2,396,160 |
+| **Full Convolution (Hankel-L)** | `M_phi_plus` only | `24 × 1536 × 1536` = 56,623,104 |
+| **Full Convolution (Non-Hankel)** | `M_phi_plus` + `M_phi_minus` | `2 × (24 × 1536 × 1536)` = 113,246,208 |
+
+The low-rank approximation mode provides a **23x** parameter reduction compared to full convolution with Hankel-L.
+
+## References
+
+- Spectral filtering operations based on eigendecomposition
+- FlashFFTConv for accelerated convolution: [GitHub](https://github.com/HazyResearch/flash-fft-conv)

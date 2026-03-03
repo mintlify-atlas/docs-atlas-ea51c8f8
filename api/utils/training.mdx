@@ -1,0 +1,205 @@
+---
+title: Training Utilities
+description: Helper utilities for training including garbage collection and learning rate scheduling
+---
+
+## GarbageCollection
+
+A utility class for managing Python's garbage collection during training to reduce memory fragmentation and improve performance.
+
+### Signature
+
+```python
+class GarbageCollection:
+    def __init__(self, gc_freq=1000):
+        ...
+    
+    def run(self, step_count):
+        ...
+```
+
+### Constructor Parameters
+
+<ParamField path="gc_freq" type="int" default="1000">
+  Frequency (in training steps) at which to trigger garbage collection. Must be a positive integer
+</ParamField>
+
+### Methods
+
+#### `__init__(gc_freq=1000)`
+
+Initializes the garbage collection manager:
+- Disables automatic garbage collection
+- Performs an initial collection of generation 1 objects
+- Stores the collection frequency
+
+#### `run(step_count)`
+
+Runs garbage collection at specified intervals during training.
+
+<ParamField path="step_count" type="int" required>
+  Current training step number
+</ParamField>
+
+**Behavior**: Triggers garbage collection every `gc_freq` steps (excluding step 1).
+
+### Example Usage
+
+```python
+from flash_stu.utils import GarbageCollection
+
+# Initialize garbage collection manager
+gc_manager = GarbageCollection(gc_freq=500)
+
+# In your training loop
+for step in range(num_training_steps):
+    # ... training code ...
+    
+    # Run garbage collection periodically
+    gc_manager.run(step)
+```
+
+### Why Use This?
+
+<CardGroup cols={2}>
+  <Card title="Memory Stability" icon="memory">
+    Prevents memory fragmentation during long training runs
+  </Card>
+  <Card title="Performance" icon="gauge">
+    Manual GC control can be more efficient than Python's automatic collection
+  </Card>
+</CardGroup>
+
+---
+
+## linear_decay_with_warmup
+
+Implements a learning rate schedule with linear warmup followed by linear decay, as described in [this paper](https://arxiv.org/pdf/2310.07831).
+
+### Signature
+
+```python
+def linear_decay_with_warmup(
+    current_step: int, 
+    warmup_steps: int, 
+    num_steps: int, 
+    max_lr: float = 3e-4, 
+    min_lr: float = 3e-5,
+) -> float
+```
+
+### Parameters
+
+<ParamField path="current_step" type="int" required>
+  The current training step number
+</ParamField>
+
+<ParamField path="warmup_steps" type="int" required>
+  Number of steps for the warmup phase. During warmup, learning rate increases linearly from `min_lr` to `max_lr`
+</ParamField>
+
+<ParamField path="num_steps" type="int" required>
+  Total number of training steps. After warmup, learning rate decays linearly from `max_lr` to `min_lr`
+</ParamField>
+
+<ParamField path="max_lr" type="float" default="3e-4">
+  Maximum learning rate reached after warmup phase
+</ParamField>
+
+<ParamField path="min_lr" type="float" default="3e-5">
+  Minimum learning rate used at the start of warmup and end of training
+</ParamField>
+
+### Returns
+
+<ResponseField name="lr" type="float">
+  The learning rate for the current step
+</ResponseField>
+
+### Schedule Phases
+
+1. **Warmup Phase** (`current_step < warmup_steps`):
+   ```
+   lr = min_lr + (max_lr - min_lr) * (current_step / warmup_steps)
+   ```
+
+2. **Decay Phase** (`current_step >= warmup_steps`):
+   ```
+   lr = max_lr - (max_lr - min_lr) * ((current_step - warmup_steps) / (num_steps - warmup_steps))
+   ```
+
+### Example Usage
+
+```python
+from flash_stu.utils import linear_decay_with_warmup
+import torch.optim as optim
+
+# Training configuration
+num_training_steps = 10000
+warmup_steps = 1000
+max_lr = 3e-4
+min_lr = 3e-5
+
+# Create optimizer
+optimizer = optim.AdamW(model.parameters(), lr=min_lr)
+
+# Training loop
+for step in range(num_training_steps):
+    # Compute current learning rate
+    lr = linear_decay_with_warmup(
+        current_step=step,
+        warmup_steps=warmup_steps,
+        num_steps=num_training_steps,
+        max_lr=max_lr,
+        min_lr=min_lr
+    )
+    
+    # Update optimizer learning rate
+    for param_group in optimizer.param_groups:
+        param_group['lr'] = lr
+    
+    # ... training code ...
+```
+
+### Using with PyTorch LambdaLR
+
+```python
+import torch.optim as optim
+from torch.optim.lr_scheduler import LambdaLR
+from flash_stu.utils import linear_decay_with_warmup
+
+optimizer = optim.AdamW(model.parameters(), lr=1.0)
+
+scheduler = LambdaLR(
+    optimizer,
+    lr_lambda=lambda step: linear_decay_with_warmup(
+        current_step=step,
+        warmup_steps=1000,
+        num_steps=10000,
+        max_lr=3e-4,
+        min_lr=3e-5
+    )
+)
+
+# In training loop
+for step in range(num_training_steps):
+    # ... training code ...
+    scheduler.step()
+```
+
+### Visualization
+
+The learning rate schedule follows this pattern:
+
+```
+Learning Rate
+    |
+    |     /‾‾‾‾‾‾‾‾‾‾‾\
+    |    /             \
+    |   /               \
+    |  /                 \
+min |_/                   \___
+    |________________________
+    0   warmup      num_steps
+         steps
+```

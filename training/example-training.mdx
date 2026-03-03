@@ -1,0 +1,290 @@
+---
+title: Example Training
+description: Train Flash STU on the FineWeb-Edu dataset using torchrun or Slurm
+---
+
+## Overview
+
+The `example.py` script provides a complete training pipeline for Flash STU, including dataset loading, distributed training setup, checkpointing, and evaluation.
+
+## Dataset Preparation
+
+The training uses the FineWeb-Edu dataset from HuggingFace.
+
+### Download and Tokenize
+
+Run the `data.py` script to download and prepare the dataset:
+
+```bash
+python data.py
+```
+
+This script:
+
+1. Downloads the FineWeb-Edu 10B token sample from HuggingFace
+2. Tokenizes text using the `o200k_base` tokenizer (matches GPT-4 vocabulary)
+3. Saves tokenized data as shards in `data/fineweb-edu-10B/`
+4. Creates separate train and validation splits
+
+**Dataset Configuration** (`data.py:13-15`):
+
+<ParamField path="local_dir" type="string" default="data/fineweb-edu-10B">
+  Local directory for storing processed dataset shards.
+</ParamField>
+
+<ParamField path="remote_name" type="string" default="sample-10BT">
+  HuggingFace dataset name/split to download.
+</ParamField>
+
+<ParamField path="shard_size" type="integer" default="100000000">
+  Number of tokens per shard file (100M tokens).
+</ParamField>
+
+### Output Format
+
+The script creates tokenized shard files:
+
+```
+data/fineweb-edu-10B/
+├── fineweb-edu-10B_val_000000.pt      # Validation shard
+├── fineweb-edu-10B_train_000001.pt    # Training shards
+├── fineweb-edu-10B_train_000002.pt
+└── ...
+```
+
+Each shard is a PyTorch tensor saved with `torch.save()` containing token IDs as `int32`.
+
+## Training with torchrun
+
+Use `torchrun` for single-node or multi-node distributed training.
+
+### Single Node, Multiple GPUs
+
+```bash
+torchrun \
+  --nproc_per_node 8 \
+  example.py
+```
+
+### Multi-Node Training
+
+On each node, run:
+
+```bash
+torchrun \
+  --nnodes 2 \
+  --nproc_per_node 8 \
+  --rdzv_id $RANDOM \
+  --rdzv_backend c10d \
+  --rdzv_endpoint $MASTER_ADDR:$MASTER_PORT \
+  example.py
+```
+
+**Parameters:**
+
+<ParamField path="--nnodes" type="integer" default="1">
+  Number of nodes (machines) to use for training.
+</ParamField>
+
+<ParamField path="--nproc_per_node" type="integer" default="8">
+  Number of GPUs per node.
+</ParamField>
+
+<ParamField path="--rdzv_id" type="string">
+  Unique job ID for rendezvous (use `$SLURM_JOB_ID` in Slurm or random value).
+</ParamField>
+
+<ParamField path="--rdzv_backend" type="string" default="c10d">
+  Rendezvous backend for multi-node coordination.
+</ParamField>
+
+<ParamField path="--rdzv_endpoint" type="string">
+  Address of the master node (format: `hostname:port`).
+</ParamField>
+
+<ParamField path="--max-restarts" type="integer" default="16">
+  Maximum number of worker restart attempts on failure.
+</ParamField>
+
+## Training with Slurm
+
+For HPC clusters with Slurm workload manager, use the provided `job.slurm` script.
+
+### Submit Job
+
+```bash
+sbatch job.slurm
+```
+
+### Slurm Script Configuration
+
+The `job.slurm` script (`job.slurm:1-45`) configures:
+
+```bash job.slurm
+#!/bin/bash
+#SBATCH --job-name=stu             # Job name
+#SBATCH --nodes=1                  # Number of nodes
+#SBATCH --ntasks-per-node=1        # Tasks per node
+#SBATCH --gpus-per-task=8          # GPUs per task
+#SBATCH --cpus-per-task=8          # CPUs per task (match GPU count)
+#SBATCH --mem=48G                  # Total memory
+#SBATCH --time=15:59:00            # Time limit (HH:MM:SS)
+
+#SBATCH --error=stu_%j.err         # Error output file
+#SBATCH --output=stu_%j.out        # Standard output file
+
+# Activate virtual environment
+source activate .venv/bin/activate
+
+# Get master node information
+MASTER_NODE=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -n1)
+MASTER_NODE_ADDR=$(srun --nodes=1 --ntasks=1 -w "$MASTER_NODE" hostname --ip-address)
+RDZV_PORT=$(python3 -c "import socket; s=socket.socket(); s.bind(('', 0)); print(s.getsockname()[1]); s.close()")
+
+# Launch training
+torchrun \
+  --nnodes 1 \
+  --nproc_per_node 8 \
+  --rdzv_id $SLURM_JOB_ID \
+  --rdzv_backend c10d \
+  --rdzv_endpoint $MASTER_NODE_ADDR:$RDZV_PORT \
+  --max-restarts 16 \
+  example.py
+```
+
+**Key Features:**
+
+- Automatically discovers master node from Slurm allocation
+- Finds available port for distributed communication
+- Uses Slurm job ID for rendezvous
+- Supports automatic worker restarts on failure
+
+### Multi-Node Slurm
+
+For multi-node training, modify the Slurm directives:
+
+```bash job.slurm
+#SBATCH --nodes=4                  # Use 4 nodes
+#SBATCH --ntasks-per-node=1
+#SBATCH --gpus-per-task=8
+
+torchrun \
+  --nnodes 4 \
+  --nproc_per_node 8 \
+  # ... rest of torchrun args
+```
+
+## Training Process
+
+The `example.py` script (`example.py:41-363`) implements:
+
+### Initialization
+
+1. **Setup distributed environment** (`example.py:43`): Initialize NCCL backend, set ranks and world size
+2. **Load configuration** (`example.py:46`): Read `config.json` from current directory
+3. **Create model** (`example.py:117-157`): Initialize FlashSTU with config parameters
+4. **Wrap with FSDP/DDP** (`example.py:159-162`): Apply distributed wrapper
+5. **Setup optimizer** (`example.py:172-176`): AdamW with fused kernels
+6. **Create data loaders** (`example.py:219-236`): Distributed data loaders for train/val
+
+### Training Loop
+
+The main training loop (`example.py:238-359`) performs:
+
+1. **Gradient accumulation**: Accumulate gradients over multiple micro-batches to achieve large effective batch size
+2. **Mixed precision**: Use bfloat16/float16 for forward/backward passes
+3. **Gradient clipping**: Clip gradients to `max_norm` (default: 1.0)
+4. **Learning rate scheduling**: Linear warmup followed by linear decay
+5. **Validation**: Evaluate on validation set every `eval_period` steps
+6. **Checkpointing**: Save model when validation loss improves
+
+### Logging
+
+Training logs are written to `log/log.txt` with the format:
+
+```
+step train {loss} lr {lr} norm {norm} dt {dt} tok/s {toks_per_sec}
+step val {val_loss}
+```
+
+### Checkpointing
+
+Checkpoints are saved to the `log/` directory:
+
+- `model_{step:05d}.safetensors`: Model weights in SafeTensors format
+- `other_checkpoints_{step:05d}.pt`: Optimizer state, config, step number, and best validation loss
+
+Checkpoints are saved when validation loss improves, at intervals specified by `save_period`.
+
+### Resume Training
+
+The script automatically resumes from the latest checkpoint if found in `log/`:
+
+```python
+checkpoints = find_checkpoint(log_dir)
+if checkpoints:
+    model, optimizer, start_step, best_val_loss = load_checkpoint(...)
+```
+
+## Monitoring
+
+### Check Job Status
+
+```bash
+# View your Slurm jobs
+squeue -u $USER
+
+# Check job details
+scontrol show job <jobid>
+
+# Monitor GPU usage
+watch nvidia-smi
+```
+
+### View Training Logs
+
+```bash
+# Follow training output
+tail -f log/log.txt
+
+# View Slurm output
+tail -f stu_<jobid>.out
+
+# Check for errors
+tail -f stu_<jobid>.err
+```
+
+## Performance Tips
+
+1. **Batch Size Tuning**: Increase `global_bsz` for better GPU utilization, adjust `bsz` to fit in memory
+2. **Activation Checkpointing**: Enable `use_activation_checkpointing` to reduce memory usage
+3. **Torch Compile**: Set `torch_compile: true` for 10-30% speedup (requires PyTorch 2.0+)
+4. **Mixed Precision**: Use bfloat16 on modern GPUs (A100, H100) for best performance
+5. **Gradient Accumulation**: Automatically calculated as `global_bsz / (bsz * seq_len * world_size)`
+
+## Troubleshooting
+
+### Out of Memory
+
+- Reduce `bsz` (per-GPU batch size)
+- Enable `use_activation_checkpointing`
+- Enable `use_cpu_offload` (slower but uses less GPU memory)
+- Use `sharding_strategy: "full_shard"`
+
+### Slow Training
+
+- Increase `bsz` to improve GPU utilization
+- Enable `torch_compile: true`
+- Disable `use_cpu_offload`
+- Check that `mixed_precision: true` and using bfloat16
+
+### NCCL Timeout
+
+- Increase timeout: `export NCCL_TIMEOUT=3600`
+- Check network connectivity between nodes
+- Verify NCCL version compatibility
+
+## See Also
+
+- [Configuration](/training/configuration) - Complete config.json reference
+- [Distributed Training](/training/distributed-training) - FSDP and DDP configuration

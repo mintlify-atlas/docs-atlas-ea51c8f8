@@ -1,0 +1,204 @@
+---
+title: 'FlashSTUConfig'
+description: 'Configuration class for Flash STU models'
+---
+
+## FlashSTUConfig
+
+Configuration object for Flash STU models. Inherits from `transformers.PretrainedConfig`.
+
+### Constructor
+
+```python
+FlashSTUConfig(
+    bsz: int = 1,
+    n_embd: int = 1536,
+    n_heads: int = 8,
+    n_layers: int = 26,
+    seq_len: int = 8192,
+    window_size: int = 1024,
+    vocab_size: int = 200064,
+    mlp_scale: int = 12,
+    bias: bool = False,
+    dropout: float = 0.0,
+    num_eigh: int = 24,
+    use_hankel_L: bool = False,
+    use_flash_fft: bool = True,
+    use_approx: bool = True,
+    use_attn: bool = True,
+    softcap: float = 50.0,
+    torch_dtype: torch.dtype = torch.bfloat16,
+    **kwargs
+)
+```
+
+### Parameters
+
+<ParamField path="bsz" type="int" default="1">
+  Batch size for training and inference.
+</ParamField>
+
+<ParamField path="n_embd" type="int" default="1536">
+  Embedding dimension size. Also used as the hidden size throughout the model.
+</ParamField>
+
+<ParamField path="n_heads" type="int" default="8">
+  Number of attention heads in attention layers.
+</ParamField>
+
+<ParamField path="n_layers" type="int" default="26">
+  Total number of layers in the model. Even-indexed layers use STU, odd-indexed layers use Attention (if `use_attn=True`) or STU.
+</ParamField>
+
+<ParamField path="seq_len" type="int" default="8192">
+  Maximum sequence length the model can process.
+</ParamField>
+
+<ParamField path="window_size" type="int" default="1024">
+  Window size for attention mechanisms (if applicable).
+</ParamField>
+
+<ParamField path="vocab_size" type="int" default="200064">
+  Size of the vocabulary (number of unique tokens).
+</ParamField>
+
+<ParamField path="mlp_scale" type="int" default="12">
+  Multiplier for the MLP intermediate dimension. The intermediate size is computed as `n_embd * mlp_scale`.
+</ParamField>
+
+<ParamField path="bias" type="bool" default="False">
+  Whether to include bias terms in linear layers.
+</ParamField>
+
+<ParamField path="dropout" type="float" default="0.0">
+  Dropout probability applied after token embeddings and in various layers.
+</ParamField>
+
+<ParamField path="num_eigh" type="int" default="24">
+  Number of eigenvalues to use for STU layer computations.
+</ParamField>
+
+<ParamField path="use_hankel_L" type="bool" default="False">
+  Whether to use Hankel-L structured matrices in STU layers. When `False`, both `M_phi_plus` and `M_phi_minus` matrices are used.
+</ParamField>
+
+<ParamField path="use_flash_fft" type="bool" default="True">
+  Whether to use Flash FFT optimizations for faster Fourier transforms in STU layers.
+</ParamField>
+
+<ParamField path="use_approx" type="bool" default="True">
+  Whether to use approximate STU computation. When `True`, uses `M_inputs` and `M_filters` matrices. When `False`, uses exact computation with `M_phi_plus` and `M_phi_minus`.
+</ParamField>
+
+<ParamField path="use_attn" type="bool" default="True">
+  Whether to interleave attention layers with STU layers. When `True`, odd-indexed layers use attention. When `False`, all layers use STU.
+</ParamField>
+
+<ParamField path="softcap" type="float" default="50.0">
+  Soft capping value for attention logits to prevent extreme values.
+</ParamField>
+
+<ParamField path="torch_dtype" type="torch.dtype" default="torch.bfloat16">
+  PyTorch data type to use for model parameters and computations.
+</ParamField>
+
+<ParamField path="**kwargs" type="dict">
+  Additional keyword arguments passed to the parent `PretrainedConfig` class.
+</ParamField>
+
+### Computed Attributes
+
+The following attributes are automatically computed during initialization:
+
+<ParamField path="hidden_size" type="int">
+  Set to `n_embd`. Provided for compatibility with HuggingFace transformers.
+</ParamField>
+
+<ParamField path="intermediate_size" type="int">
+  Computed as `n_embd * mlp_scale`. Determines the size of MLP hidden layers.
+</ParamField>
+
+<ParamField path="hidden_act" type="str">
+  Set to `"swish"`. Activation function used in MLPs.
+</ParamField>
+
+<ParamField path="model_type" type="str">
+  Set to `"FlashSTU"`. Identifier for the model architecture.
+</ParamField>
+
+### Usage Examples
+
+#### Basic Configuration
+
+```python
+from flash_stu import FlashSTUConfig
+
+# Create a small model configuration
+config = FlashSTUConfig(
+    n_embd=768,
+    n_layers=12,
+    seq_len=2048,
+    vocab_size=50000
+)
+
+print(f"Hidden size: {config.hidden_size}")
+print(f"Intermediate size: {config.intermediate_size}")
+```
+
+#### Large Model Configuration
+
+```python
+# Configure a large Flash STU model
+large_config = FlashSTUConfig(
+    bsz=4,
+    n_embd=2048,
+    n_heads=16,
+    n_layers=32,
+    seq_len=16384,
+    mlp_scale=16,
+    dropout=0.1,
+    torch_dtype=torch.bfloat16
+)
+```
+
+#### STU-Only Configuration
+
+```python
+# Configuration without attention layers
+stu_only_config = FlashSTUConfig(
+    n_embd=1536,
+    n_layers=24,
+    use_attn=False,  # All layers use STU
+    use_approx=True,
+    use_flash_fft=True
+)
+```
+
+#### Exact STU Computation
+
+```python
+# Use exact STU computation instead of approximation
+exact_config = FlashSTUConfig(
+    n_embd=1536,
+    n_layers=26,
+    use_approx=False,  # Use exact computation
+    use_hankel_L=False,  # Use both phi matrices
+    num_eigh=32  # More eigenvalues for accuracy
+)
+```
+
+#### Save and Load Configuration
+
+```python
+# Save configuration to file
+config = FlashSTUConfig(n_embd=1024, n_layers=16)
+config.save_pretrained("./my-flash-stu-config")
+
+# Load configuration from file
+loaded_config = FlashSTUConfig.from_pretrained("./my-flash-stu-config")
+```
+
+## See Also
+
+- [FlashSTU Model](/api/model) - Model class reference
+- [Training Guide](/training/configuration) - How to configure training parameters

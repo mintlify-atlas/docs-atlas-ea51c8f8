@@ -1,0 +1,263 @@
+---
+title: MLP (SwiGLU) Module
+description: SwiGLU feedforward network with gated linear units
+---
+
+## Overview
+
+The `MLP` module implements the SwiGLU (Swish-Gated Linear Unit) architecture, a gated feedforward network that uses GELU activation and element-wise multiplication for improved expressiveness.
+
+**Source:** `flash_stu/modules/swiglu.py`
+
+## Class Definition
+
+```python
+class MLP(nn.Module):
+    def __init__(self, config, dtype=None)
+```
+
+### Initialization Parameters
+
+<ParamField path="config" type="FlashSTUConfig" required>
+  Configuration object with the following attributes:
+  - `n_embd` (int): Embedding/hidden dimension
+  - `mlp_scale` (int): Multiplier for intermediate dimension (typically 12)
+  - `bias` (bool): Whether to use bias in linear layers
+  - `dropout` (float): Dropout probability
+  - `torch_dtype` (torch.dtype): Data type for weights
+</ParamField>
+
+<ParamField path="dtype" type="torch.dtype">
+  Optional override for parameter dtype. If None, uses `config.torch_dtype`
+</ParamField>
+
+## Architecture
+
+The SwiGLU architecture uses three linear projections with gating:
+
+```
+Input (hidden_size) 
+    ├─→ gate_proj → GELU → 
+    │                        × → down_proj → Dropout → Output
+    └─→ up_proj   ────────→ 
+```
+
+### Components
+
+<ResponseField name="hidden_size" type="int">
+  Input/output dimension, set to `config.n_embd`
+</ResponseField>
+
+<ResponseField name="intermediate_size" type="int">
+  Intermediate dimension, computed as `config.n_embd * config.mlp_scale`
+  
+  Example: With `n_embd=1536` and `mlp_scale=12`, `intermediate_size=18432`
+</ResponseField>
+
+<ResponseField name="gate_proj" type="nn.Linear">
+  **Shape:** `(hidden_size, intermediate_size)`
+  
+  Projects input to intermediate dimension for gating pathway
+</ResponseField>
+
+<ResponseField name="up_proj" type="nn.Linear">
+  **Shape:** `(hidden_size, intermediate_size)`
+  
+  Projects input to intermediate dimension for value pathway
+</ResponseField>
+
+<ResponseField name="down_proj" type="nn.Linear">
+  **Shape:** `(intermediate_size, hidden_size)`
+  
+  Projects gated intermediate representation back to hidden dimension
+</ResponseField>
+
+<ResponseField name="dropout" type="nn.Dropout">
+  Dropout layer applied to final output
+</ResponseField>
+
+## Methods
+
+### forward
+
+```python
+def forward(self, x) -> torch.Tensor
+```
+
+Applies SwiGLU transformation to input.
+
+<ParamField path="x" type="torch.Tensor" required>
+  Input tensor with shape `(batch_size, seq_len, hidden_size)`
+</ParamField>
+
+**Returns:** `torch.Tensor` with shape `(batch_size, seq_len, hidden_size)`
+
+**Source:** `flash_stu/modules/swiglu.py:24`
+
+## Gating Mechanism
+
+The SwiGLU gating mechanism combines two pathways:
+
+### Gate Pathway
+
+```python
+gate = self.gate_proj(x)          # (*, hidden_size) → (*, intermediate_size)
+gate = F.gelu(gate, approximate="tanh")  # Apply GELU activation
+```
+
+- Projects input to intermediate dimension
+- Applies GELU activation with tanh approximation
+- Acts as a learned "gate" controlling information flow
+
+### Value Pathway
+
+```python
+up = self.up_proj(x)              # (*, hidden_size) → (*, intermediate_size)
+```
+
+- Projects input to intermediate dimension
+- No activation applied
+- Represents the "values" to be gated
+
+### Element-wise Fusion
+
+```python
+fuse = gate * up                   # Element-wise multiplication
+outputs = self.down_proj(fuse)     # (*, intermediate_size) → (*, hidden_size)
+outputs = self.dropout(outputs)    # Apply dropout
+```
+
+- Multiplies gate and value pathways element-wise
+- Projects back to hidden dimension
+- Applies dropout for regularization
+
+## Complete Forward Pass
+
+The forward pass implements the following computation:
+
+```python
+def forward(self, x):
+    gate = self.gate_proj(x)
+    gate = F.gelu(gate, approximate="tanh")
+    up = self.up_proj(x)
+    fuse = gate * up
+    outputs = self.down_proj(fuse)
+    outputs = self.dropout(outputs)
+    return outputs
+```
+
+**Mathematical form:**
+```
+Output = Dropout(W_down × (GELU(W_gate × x) ⊙ (W_up × x)))
+```
+
+Where `⊙` denotes element-wise multiplication.
+
+## Usage Example
+
+```python
+import torch
+from flash_stu.config import FlashSTUConfig
+from flash_stu.modules.swiglu import MLP
+
+# Create configuration
+config = FlashSTUConfig(
+    n_embd=1536,
+    mlp_scale=12,
+    bias=False,
+    dropout=0.0,
+    torch_dtype=torch.bfloat16
+)
+
+# Initialize MLP module
+mlp = MLP(config).cuda()
+
+# Check dimensions
+print(f"Hidden size: {mlp.hidden_size}")           # 1536
+print(f"Intermediate size: {mlp.intermediate_size}") # 18432
+
+# Forward pass
+batch_size = 4
+seq_len = 2048
+x = torch.randn(batch_size, seq_len, config.n_embd,
+                dtype=torch.bfloat16, device='cuda')
+output = mlp(x)  # Shape: (4, 2048, 1536)
+```
+
+## Custom dtype Example
+
+```python
+# Override config dtype
+mlp_fp32 = MLP(config, dtype=torch.float32)
+
+# Uses float32 for all parameters instead of bfloat16
+x_fp32 = torch.randn(4, 2048, 1536, dtype=torch.float32, device='cuda')
+output_fp32 = mlp_fp32(x_fp32)
+```
+
+## Parameter Count
+
+For `hidden_size=h` and `intermediate_size=i`:
+
+| Component | Shape | Parameters |
+|-----------|-------|------------|
+| `gate_proj` | (h, i) | h × i |
+| `up_proj` | (h, i) | h × i |
+| `down_proj` | (i, h) | i × h |
+| **Total** | - | **3 × h × i** |
+
+**Example:** With `h=1536` and `i=18432` (mlp_scale=12):
+- Total parameters: 3 × 1536 × 18432 = **84,934,656** parameters
+- Without bias (default): exactly 84,934,656
+- With bias: 84,934,656 + 2×18432 + 1536 = **84,972,480** parameters
+
+## SwiGLU vs Standard FFN
+
+| Feature | SwiGLU (This Implementation) | Standard FFN |
+|---------|----------------------------|---------------|
+| **Projections** | 3 linear layers | 2 linear layers |
+| **Activation** | GELU with gating | ReLU/GELU |
+| **Mechanism** | Gate × Value | Direct activation |
+| **Parameters** | 3hi | 2hi (for same dimensions) |
+| **Expressiveness** | Higher | Standard |
+
+## Performance Notes
+
+- **GELU approximation:** Uses `approximate="tanh"` for faster computation
+- **Dropout note:** Currently incompatible with Liger-Kernel optimization (see TODO in source)
+- **Memory:** Stores intermediate activations of size `(batch_size, seq_len, intermediate_size)`
+
+## References
+
+- **SwiGLU architecture:** [GLU Variants paper](https://arxiv.org/pdf/2002.05202)
+- Based on gated linear units with Swish/GELU activation
+- Commonly used in modern LLMs (LLaMA, PaLM, etc.)
+
+## Implementation Details
+
+### GELU Activation
+
+```python
+F.gelu(gate, approximate="tanh")
+```
+
+**Tanh approximation:**
+```
+GELU(x) ≈ 0.5 × x × (1 + tanh(√(2/π) × (x + 0.044715 × x³)))
+```
+
+**Benefits:**
+- Faster than exact GELU
+- Negligible accuracy difference
+- Better hardware utilization
+
+### Dropout Position
+
+Dropout is applied **after** the down projection:
+
+```python
+outputs = self.down_proj(fuse)
+outputs = self.dropout(outputs)  # Applied last
+```
+
+This ensures dropout is applied to the final representation before the residual connection.

@@ -1,0 +1,80 @@
+---
+title: Numerical Utilities
+description: Helper functions for numerical computations and rounding operations
+---
+
+## nearest_power_of_two
+
+Computes the nearest power of two for a given integer. Useful for padding sequences to power-of-two lengths for efficient FFT operations.
+
+### Signature
+
+```python
+def nearest_power_of_two(x: int, round_up: bool = False) -> int
+```
+
+### Parameters
+
+<ParamField path="x" type="int" required>
+  The input integer value
+</ParamField>
+
+<ParamField path="round_up" type="bool" default="False">
+  If `True`, rounds up to the next power of two. If `False`, rounds down to the previous power of two
+</ParamField>
+
+### Returns
+
+<ResponseField name="result" type="int">
+  The nearest power of two to the input value
+</ResponseField>
+
+### Implementation Details
+
+The function uses bit shifting operations for efficient computation:
+
+- **Round down**: `1 << math.floor(math.log2(x))`
+- **Round up**: `1 << math.ceil(math.log2(x))`
+
+This approach is more efficient than exponentiation and avoids floating-point precision issues.
+
+### Example Usage
+
+```python
+from flash_stu.utils import nearest_power_of_two
+
+# Round down to nearest power of two
+result = nearest_power_of_two(100, round_up=False)
+print(result)  # 64 (2^6)
+
+# Round up to nearest power of two
+result = nearest_power_of_two(100, round_up=True)
+print(result)  # 128 (2^7)
+
+# Exact power of two
+result = nearest_power_of_two(256, round_up=False)
+print(result)  # 256 (2^8)
+
+result = nearest_power_of_two(256, round_up=True)
+print(result)  # 256 (2^8)
+```
+
+### Common Use Cases
+
+<CardGroup cols={2}>
+  <Card title="FFT Padding" icon="wave-square">
+    Pad sequences to power-of-two lengths for optimal FFT performance
+  </Card>
+  <Card title="Memory Alignment" icon="memory">
+    Align buffer sizes to powers of two for efficient GPU memory access
+  </Card>
+</CardGroup>
+
+### Usage in Flash STU
+
+This utility is used internally by the `flash_convolve` function in `stu_utils.py` to determine padding length:
+
+```python
+padded_len = nearest_power_of_two(seq_len, round_up=True)
+pad_len = padded_len - seq_len
+```

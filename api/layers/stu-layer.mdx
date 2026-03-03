@@ -1,0 +1,151 @@
+---
+title: STULayer
+description: Layer wrapper for STU module with normalization and MLP
+---
+
+## Overview
+
+`STULayer` wraps the STU (Spatial Temporal Unit) module with RMS normalization and a feed-forward MLP, implementing a standard transformer-style residual architecture.
+
+## Architecture
+
+The layer follows a dual-stream residual pattern:
+
+```python
+x = x + self.stu(self.stu_norm(x))      # STU branch with residual
+x = x + self.mlp(self.mlp_norm(x))      # MLP branch with residual
+```
+
+This is analogous to standard transformer layers but replaces attention with the STU module.
+
+## Implementation
+
+### Class Definition
+
+```python
+class STULayer(nn.Module):
+    def __init__(self, config, phi, n):
+        super(STULayer, self).__init__()
+        self.stu_norm = TritonNorm(config.n_embd) if triton_norm \
+                        else RMSNorm(config.n_embd, dtype=config.torch_dtype)
+        self.stu = STU(config, phi, n)
+        self.mlp_norm = TritonNorm(config.n_embd) if triton_norm \
+                        else RMSNorm(config.n_embd, dtype=config.torch_dtype)
+        self.mlp = TritonMLP(config) if triton_mlp \
+                   else MLP(config, dtype=config.torch_dtype)
+```
+
+### Parameters
+
+<ParamField path="config" type="object" required>
+  Model configuration object containing:
+  - `n_embd`: Embedding dimension
+  - `torch_dtype`: Data type for computations
+  - Additional STU and MLP configuration parameters
+</ParamField>
+
+<ParamField path="phi" type="Tensor" required>
+  Phase parameters for the STU module, shape `(sequence_length,)`
+</ParamField>
+
+<ParamField path="n" type="int" required>
+  Layer index or depth parameter for the STU module
+</ParamField>
+
+## Components
+
+### Normalization Layers
+
+- **stu_norm**: RMSNorm applied before the STU module
+- **mlp_norm**: RMSNorm applied before the MLP
+
+The implementation uses Triton-optimized `LigerRMSNorm` when available, falling back to PyTorch's native `RMSNorm`.
+
+### STU Module
+
+The core STU transformation module. See [STU Module](/api/modules/stu) for details.
+
+### MLP Module
+
+SwiGLU-based feed-forward network. Uses Triton-optimized `LigerSwiGLUMLP` when available, otherwise falls back to the vanilla implementation.
+
+## Forward Pass
+
+```python
+def forward(self, x: torch.Tensor) -> torch.Tensor:
+    x = x + self.stu(self.stu_norm(x))
+    x = x + self.mlp(self.mlp_norm(x))
+    return x
+```
+
+### Input
+
+<ParamField path="x" type="torch.Tensor">
+  Input tensor of shape `(batch_size, sequence_length, n_embd)`
+</ParamField>
+
+### Output
+
+<ResponseField name="output" type="torch.Tensor">
+  Transformed tensor with the same shape as input: `(batch_size, sequence_length, n_embd)`
+</ResponseField>
+
+## Usage Example
+
+```python
+import torch
+from flash_stu.layers.stu_layer import STULayer
+
+# Initialize layer
+stu_layer = STULayer(config, phi, n=0)
+
+# Forward pass
+x = torch.randn(2, 512, 768)  # (batch, seq_len, n_embd)
+output = stu_layer(x)
+
+print(output.shape)  # torch.Size([2, 512, 768])
+```
+
+## Key Features
+
+- **Residual Connections**: Both STU and MLP branches use residual connections for gradient flow
+- **Pre-Normalization**: RMSNorm is applied before each sub-module (pre-norm architecture)
+- **Triton Optimization**: Automatically uses optimized Triton kernels when available
+- **Flexible Dtype**: Supports configurable data types through `config.torch_dtype`
+
+## Source Code
+
+```python
+class STULayer(nn.Module):
+    def __init__(self, config, phi, n):
+        super(STULayer, self).__init__()
+        self.stu_norm = (
+            TritonNorm(config.n_embd)
+            if triton_norm
+            else RMSNorm(config.n_embd, dtype=config.torch_dtype)
+        )
+        self.stu = STU(config, phi, n)
+        self.mlp_norm = (
+            TritonNorm(config.n_embd)
+            if triton_norm
+            else RMSNorm(config.n_embd, dtype=config.torch_dtype)
+        )
+        self.mlp = (
+            TritonMLP(config) if triton_mlp else MLP(config, dtype=config.torch_dtype)
+        )
+
+        self.stu_norm = self.stu_norm.to(dtype=config.torch_dtype)
+        self.mlp = self.mlp.to(dtype=config.torch_dtype)
+        self.mlp_norm = self.mlp_norm.to(dtype=config.torch_dtype)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = x + self.stu(self.stu_norm(x))
+        x = x + self.mlp(self.mlp_norm(x))
+        return x
+```
+
+## See Also
+
+- [STU Module](/api/modules/stu) - Core STU implementation
+- [MLP Module](/api/modules/swiglu) - SwiGLU MLP implementation
+- [AttentionLayer](/api/layers/attention-layer) - Standard attention-based layer

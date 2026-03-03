@@ -1,0 +1,226 @@
+---
+title: Distributed Training
+description: Configure FSDP and DDP for multi-GPU training with Flash STU
+---
+
+## Overview
+
+Flash STU supports distributed training using PyTorch's Distributed Data Parallel (DDP) and Fully Sharded Data Parallel (FSDP). FSDP is recommended for large models as it shards model parameters, gradients, and optimizer states across GPUs.
+
+## DDP vs FSDP
+
+Choose between DDP and FSDP based on your model size and hardware constraints:
+
+**DDP (Distributed Data Parallel)**
+- Replicates the full model on each GPU
+- Lower communication overhead
+- Best for smaller models that fit in GPU memory
+- Set `"ddp": true` and `"fsdp": false` in config.json
+
+**FSDP (Fully Sharded Data Parallel)**
+- Shards model parameters, gradients, and optimizer states
+- Enables training of larger models than fit on a single GPU
+- Supports CPU offloading for extremely large models
+- Set `"fsdp": true` and `"ddp": false` in config.json (recommended)
+
+<Warning>
+  You cannot enable both DDP and FSDP simultaneously. The training script will raise an error if both are set to `true`.
+</Warning>
+
+## FSDP Configuration
+
+### Sharding Strategies
+
+Control how model parameters are sharded across GPUs:
+
+<ParamField path="sharding_strategy" type="string" default="full_shard">
+  Determines how model state is distributed across GPUs.
+  
+  **Options:**
+  - `full_shard`: Shard parameters, gradients, and optimizer states (most memory efficient)
+  - `shard_grad_op`: Shard gradients and optimizer states only
+  - `no_shard`: No sharding (equivalent to DDP)
+</ParamField>
+
+<ParamField path="fsdp" type="boolean" default="true">
+  Enable Fully Sharded Data Parallel training.
+</ParamField>
+
+<ParamField path="ddp" type="boolean" default="false">
+  Enable Distributed Data Parallel training. Cannot be used with FSDP.
+</ParamField>
+
+### Mixed Precision
+
+Configure mixed precision training for faster computation and reduced memory usage:
+
+<ParamField path="mixed_precision" type="boolean" default="true">
+  Enable mixed precision training.
+</ParamField>
+
+<ParamField path="torch_dtype" type="string" default="bfloat16">
+  Primary data type for model weights and activations.
+  
+  **Options:**
+  - `bfloat16`: Brain floating point (recommended for modern GPUs with BF16 support)
+  - `float16`: Half precision
+  - `float32`: Full precision
+</ParamField>
+
+<ParamField path="precision" type="object">
+  Fine-grained precision control for different tensor types.
+  
+  ```json
+  {
+    "param": "bfloat16",    // Parameter dtype
+    "reduce": "bfloat16",   // Gradient reduction dtype
+    "buffer": "bfloat16"    // Buffer dtype
+  }
+  ```
+</ParamField>
+
+### Memory Optimization
+
+<ParamField path="use_cpu_offload" type="boolean" default="false">
+  Offload parameters to CPU when not in use. Reduces GPU memory usage at the cost of increased CPU-GPU communication.
+  
+  Useful for extremely large models that don't fit in GPU memory even with full sharding.
+</ParamField>
+
+<ParamField path="use_activation_checkpointing" type="boolean" default="true">
+  Enable activation checkpointing to trade computation for memory. Recomputes activations during backward pass instead of storing them.
+  
+  Applied to modules specified in `fsdp_modules`.
+</ParamField>
+
+<ParamField path="fsdp_modules" type="array" default='["STU", "Attention", "MLP"]'>
+  List of module classes to wrap with FSDP and apply activation checkpointing.
+  
+  ```json
+  ["STU", "Attention", "MLP"]
+  ```
+</ParamField>
+
+### Wrapping Policy
+
+<ParamField path="auto_wrap_policy" type="string" default="partial">
+  Policy for automatically wrapping modules with FSDP.
+  
+  **Options:**
+  - `partial`: Wrap specific module classes defined in `fsdp_modules`
+  - `size_based`: Wrap modules based on parameter count threshold
+</ParamField>
+
+### Prefetching
+
+Optimize communication and computation overlap:
+
+<ParamField path="backward_prefetch" type="string" default="backward_pre">
+  When to prefetch parameters during backward pass.
+  
+  **Options:**
+  - `backward_pre`: Prefetch before backward computation (recommended)
+  - `backward_post`: Prefetch after backward computation
+  - `null`: Disable backward prefetching
+</ParamField>
+
+<ParamField path="forward_prefetch" type="boolean" default="false">
+  Enable prefetching during forward pass. Can improve performance but increases memory usage.
+</ParamField>
+
+### Additional Settings
+
+<ParamField path="sync_module_states" type="boolean" default="true">
+  Synchronize module states across all ranks during initialization. Ensures all GPUs start with identical model parameters.
+</ParamField>
+
+<ParamField path="use_orig_params" type="boolean" default="true">
+  Use original parameter variables for optimizer. Required for some optimizers and enables better compatibility with torch.compile.
+</ParamField>
+
+<ParamField path="state_dict_type" type="string" default="full">
+  Format for saving model checkpoints.
+  
+  **Options:**
+  - `full`: Save complete model on rank 0 (easier to load for inference)
+  - `sharded`: Save sharded checkpoint across ranks
+</ParamField>
+
+<ParamField path="device_id" type="integer" default="null">
+  Specific CUDA device ID for FSDP. If `null`, uses the current CUDA device.
+</ParamField>
+
+## Example Configurations
+
+### Full FSDP (Recommended)
+
+Maximum memory efficiency for large models:
+
+```json config.json
+{
+  "fsdp": true,
+  "ddp": false,
+  "mixed_precision": true,
+  "torch_dtype": "bfloat16",
+  "use_cpu_offload": false,
+  "sharding_strategy": "full_shard",
+  "auto_wrap_policy": "partial",
+  "backward_prefetch": "backward_pre",
+  "forward_prefetch": false,
+  "sync_module_states": true,
+  "use_orig_params": true,
+  "precision": {
+    "param": "bfloat16",
+    "reduce": "bfloat16",
+    "buffer": "bfloat16"
+  },
+  "fsdp_modules": ["STU", "Attention", "MLP"],
+  "use_activation_checkpointing": true
+}
+```
+
+### FSDP with CPU Offload
+
+For extremely large models:
+
+```json config.json
+{
+  "fsdp": true,
+  "ddp": false,
+  "use_cpu_offload": true,
+  "sharding_strategy": "full_shard",
+  "use_activation_checkpointing": true
+}
+```
+
+### DDP Configuration
+
+For smaller models:
+
+```json config.json
+{
+  "fsdp": false,
+  "ddp": true,
+  "mixed_precision": true,
+  "torch_dtype": "bfloat16"
+}
+```
+
+## Implementation Details
+
+The FSDP setup is handled in `distributed.py:161` by the `setup_fsdp()` function, which:
+
+1. Validates CUDA and NCCL availability
+2. Configures mixed precision policies
+3. Sets up CPU offloading if enabled
+4. Applies the selected sharding strategy
+5. Configures prefetching policies
+6. Wraps specified modules with FSDP
+7. Applies activation checkpointing to reduce memory usage
+
+Activation checkpointing is applied using PyTorch's `apply_activation_checkpointing()` with the `NO_REENTRANT` implementation for better compatibility with FSDP.
+
+## See Also
+
+- [Configuration](/training/configuration) - Complete config.json reference
+- [Example Training](/training/example-training) - Run distributed training

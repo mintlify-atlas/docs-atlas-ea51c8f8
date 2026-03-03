@@ -1,0 +1,157 @@
+---
+title: AttentionLayer
+description: Layer wrapper for Attention module with normalization and MLP
+---
+
+## Overview
+
+`AttentionLayer` wraps the standard Attention module with RMS normalization and a feed-forward MLP, implementing the classic transformer layer architecture.
+
+## Architecture
+
+The layer follows the standard transformer dual-stream residual pattern:
+
+```python
+x = x + self.attn(self.attn_norm(x))    # Attention branch with residual
+x = x + self.mlp(self.mlp_norm(x))      # MLP branch with residual
+```
+
+This is the canonical transformer layer design with pre-normalization.
+
+## Implementation
+
+### Class Definition
+
+```python
+class AttentionLayer(nn.Module):
+    def __init__(self, config) -> None:
+        super(AttentionLayer, self).__init__()
+        self.attn_norm = TritonNorm(config.n_embd) if triton_norm \
+                         else RMSNorm(config.n_embd, dtype=config.torch_dtype)
+        self.attn = Attention(config)
+        self.mlp_norm = TritonNorm(config.n_embd) if triton_norm \
+                        else RMSNorm(config.n_embd, dtype=config.torch_dtype)
+        self.mlp = TritonMLP(config) if triton_mlp \
+                   else MLP(config, dtype=config.torch_dtype)
+```
+
+### Parameters
+
+<ParamField path="config" type="object" required>
+  Model configuration object containing:
+  - `n_embd`: Embedding dimension
+  - `torch_dtype`: Data type for computations
+  - Additional attention and MLP configuration parameters
+</ParamField>
+
+## Components
+
+### Normalization Layers
+
+- **attn_norm**: RMSNorm applied before the attention module
+- **mlp_norm**: RMSNorm applied before the MLP
+
+The implementation uses Triton-optimized `LigerRMSNorm` when available, falling back to PyTorch's native `RMSNorm`.
+
+### Attention Module
+
+Multi-head attention mechanism. See [Attention Module](/api/modules/attention) for details.
+
+### MLP Module
+
+SwiGLU-based feed-forward network. Uses Triton-optimized `LigerSwiGLUMLP` when available, otherwise falls back to the vanilla implementation.
+
+## Forward Pass
+
+```python
+def forward(self, x: torch.Tensor) -> torch.Tensor:
+    x = x + self.attn(self.attn_norm(x))
+    x = x + self.mlp(self.mlp_norm(x))
+    return x
+```
+
+### Input
+
+<ParamField path="x" type="torch.Tensor">
+  Input tensor of shape `(batch_size, sequence_length, n_embd)`
+</ParamField>
+
+### Output
+
+<ResponseField name="output" type="torch.Tensor">
+  Transformed tensor with the same shape as input: `(batch_size, sequence_length, n_embd)`
+</ResponseField>
+
+## Usage Example
+
+```python
+import torch
+from flash_stu.layers.attention_layer import AttentionLayer
+
+# Initialize layer
+attn_layer = AttentionLayer(config)
+
+# Forward pass
+x = torch.randn(2, 512, 768)  # (batch, seq_len, n_embd)
+output = attn_layer(x)
+
+print(output.shape)  # torch.Size([2, 512, 768])
+```
+
+## Key Features
+
+- **Residual Connections**: Both attention and MLP branches use residual connections for gradient flow
+- **Pre-Normalization**: RMSNorm is applied before each sub-module (pre-norm architecture)
+- **Triton Optimization**: Automatically uses optimized Triton kernels when available
+- **Flexible Dtype**: Supports configurable data types through `config.torch_dtype`
+- **Standard Architecture**: Follows the widely-adopted transformer layer design
+
+## Comparison with STULayer
+
+The key difference between `AttentionLayer` and `STULayer` is the primary transformation module:
+
+| Feature | AttentionLayer | STULayer |
+|---------|---------------|----------|
+| Primary Module | Multi-head Attention | STU (Spatial Temporal Unit) |
+| Parameters | `config` only | `config`, `phi`, `n` |
+| Use Case | Standard transformer layers | STU-based transformer layers |
+| Architecture | Identical residual structure | Identical residual structure |
+
+Both layers share the same overall architecture pattern with normalization and MLP components.
+
+## Source Code
+
+```python
+class AttentionLayer(nn.Module):
+    def __init__(self, config) -> None:
+        super(AttentionLayer, self).__init__()
+        self.attn_norm = (
+            TritonNorm(config.n_embd)
+            if triton_norm
+            else RMSNorm(config.n_embd, dtype=config.torch_dtype)
+        )
+        self.attn = Attention(config)
+        self.mlp_norm = (
+            TritonNorm(config.n_embd)
+            if triton_norm
+            else RMSNorm(config.n_embd, dtype=config.torch_dtype)
+        )
+        self.mlp = (
+            TritonMLP(config) if triton_mlp else MLP(config, dtype=config.torch_dtype)
+        )
+
+        self.attn_norm = self.attn_norm.to(dtype=config.torch_dtype)
+        self.mlp = self.mlp.to(dtype=config.torch_dtype)
+        self.mlp_norm = self.mlp_norm.to(dtype=config.torch_dtype)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = x + self.attn(self.attn_norm(x))
+        x = x + self.mlp(self.mlp_norm(x))
+        return x
+```
+
+## See Also
+
+- [Attention Module](/api/modules/attention) - Multi-head attention implementation
+- [MLP Module](/api/modules/swiglu) - SwiGLU MLP implementation
+- [STULayer](/api/layers/stu-layer) - STU-based layer variant

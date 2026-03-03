@@ -1,0 +1,124 @@
+---
+title: Spectral Filters
+description: Utilities for computing spectral filters using Hankel matrices and eigendecomposition
+---
+
+## get_spectral_filters
+
+Computes spectral filters based on the eigendecomposition of a Hankel matrix. The filters are derived from the top-K eigenvectors, scaled by the fourth root of their corresponding eigenvalues.
+
+### Signature
+
+```python
+def get_spectral_filters(
+    seq_len: int, 
+    K: int, 
+    use_hankel_L: bool = False, 
+    device: torch.device = None,
+    dtype: torch.dtype = torch.bfloat16,
+) -> torch.Tensor
+```
+
+### Parameters
+
+<ParamField path="seq_len" type="int" required>
+  Length of the sequence for which to compute spectral filters
+</ParamField>
+
+<ParamField path="K" type="int" required>
+  Number of eigenvectors to use (num_eigh). The function returns the top-K eigenvectors from the eigendecomposition
+</ParamField>
+
+<ParamField path="use_hankel_L" type="bool" default="False">
+  If `True`, uses an alternative Hankel matrix formulation with sign alternation. If `False`, uses the standard formulation
+</ParamField>
+
+<ParamField path="device" type="torch.device" default="None">
+  Target device for the returned tensor (e.g., `torch.device('cuda:0')`)
+</ParamField>
+
+<ParamField path="dtype" type="torch.dtype" default="torch.bfloat16">
+  Data type for the returned tensor
+</ParamField>
+
+### Returns
+
+<ResponseField name="phi" type="torch.Tensor">
+  A tensor of shape `(seq_len, K)` containing the spectral filters. Each column represents an eigenvector scaled by the fourth root of its eigenvalue (σ^0.25)
+</ResponseField>
+
+### How It Works
+
+1. **Hankel Matrix Construction**: Creates a Hankel matrix `Z` based on the sequence length:
+   - Standard formulation: `Z[i,j] = 2.0 / ((i+j)^3 - (i+j))`
+   - Alternative formulation (`use_hankel_L=True`): Uses sign alternation and different denominator
+
+2. **Eigendecomposition**: Computes the eigenvalues (σ) and eigenvectors (φ) of the Hankel matrix
+
+3. **Top-K Selection**: Selects the K largest eigenvalues and their corresponding eigenvectors
+
+4. **Scaling**: Scales each eigenvector by σ^0.25 (fourth root of eigenvalue)
+
+5. **Tensor Conversion**: Converts the result to a PyTorch tensor with specified device and dtype
+
+### Example Usage
+
+```python
+import torch
+from flash_stu.utils import get_spectral_filters
+
+# Compute spectral filters for sequence length 512 with 16 filters
+filters = get_spectral_filters(
+    seq_len=512,
+    K=16,
+    use_hankel_L=False,
+    device=torch.device('cuda'),
+    dtype=torch.bfloat16
+)
+
+print(filters.shape)  # torch.Size([512, 16])
+```
+
+### Requirements
+
+<Warning>
+  CUDA must be available. The function asserts `torch.cuda.is_available()` and will raise an error if CUDA is not present.
+</Warning>
+
+## get_hankel
+
+Helper function that constructs the Hankel matrix used by `get_spectral_filters`.
+
+### Signature
+
+```python
+def get_hankel(seq_len: int, use_hankel_L: bool = False) -> np.ndarray
+```
+
+### Parameters
+
+<ParamField path="seq_len" type="int" required>
+  Length of the sequence
+</ParamField>
+
+<ParamField path="use_hankel_L" type="bool" default="False">
+  Determines which Hankel matrix formulation to use
+</ParamField>
+
+### Returns
+
+<ResponseField name="Z" type="np.ndarray">
+  A square Hankel matrix of shape `(seq_len, seq_len)` with float64 precision
+</ResponseField>
+
+### Example Usage
+
+```python
+import numpy as np
+from flash_stu.utils.stu_utils import get_hankel
+
+# Get Hankel matrix for sequence length 8
+Z = get_hankel(seq_len=8, use_hankel_L=False)
+print(Z.shape)  # (8, 8)
+print(Z.dtype)  # float64
+```

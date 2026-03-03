@@ -1,0 +1,95 @@
+---
+title: Introduction
+description: Fast Spectral Transform Units - An optimized PyTorch implementation
+---
+
+<img
+  className="block dark:hidden"
+  src="/images/flash-stu.webp"
+  alt="Flash STU Hero Light"
+/>
+<img
+  className="hidden dark:block"
+  src="/images/flash-stu.webp"
+  alt="Flash STU Hero Dark"
+/>
+
+## Overview
+
+Flash STU is an optimized, open-source PyTorch implementation of the Spectral Transform Unit (STU) as proposed in [*Spectral State Space Models*](https://arxiv.org/abs/2312.06837) by Agarwal et al. (2024). This implementation complements the [Flash STU: Fast Spectral Transform Units](https://arxiv.org/abs/2409.10489) paper.
+
+The STU module is a fast and flexible building block that can be adapted into a wide range of neural network architectures, especially those that aim to solve tasks with long-range dependencies.
+
+## Key Features
+
+<CardGroup cols={3}>
+  <Card title="Fast Convolutions" icon="bolt">
+    Accelerated convolutions using [Flash FFT](https://github.com/HazyResearch/flash-fft-conv) for optimal performance
+  </Card>
+  <Card title="Fast Local Attention" icon="rocket">
+    High-speed local attention using sliding window [Flash Attention](https://github.com/Dao-AILab/flash-attention)
+  </Card>
+  <Card title="Distributed Training" icon="globe">
+    Full support for distributed training using [DDP](https://pytorch.org/docs/stable/generated/torch.nn.parallel.DistributedDataParallel.html) and [FSDP](https://pytorch.org/docs/stable/fsdp.html)
+  </Card>
+</CardGroup>
+
+## What is STU?
+
+The Spectral Transform Unit (STU) is a neural network module that leverages spectral methods to efficiently capture long-range dependencies in sequence data. By operating in the frequency domain, STU can process sequences with significantly better computational efficiency compared to traditional attention mechanisms, making it ideal for:
+
+- Language modeling with long contexts
+- Time series analysis
+- Signal processing tasks
+- Any application requiring efficient long-range dependency modeling
+
+## Get Started
+
+<CardGroup cols={2}>
+  <Card
+    title="Installation"
+    icon="download"
+    href="/installation"
+  >
+    Install Flash STU with PyTorch, CUDA, and all dependencies
+  </Card>
+  <Card
+    title="Quickstart"
+    icon="play"
+    href="/quickstart"
+  >
+    Get up and running with Flash STU in minutes
+  </Card>
+  <Card
+    title="Architecture"
+    icon="diagram-project"
+    href="/concepts/architecture"
+  >
+    Learn about the Flash STU architecture and design
+  </Card>
+  <Card
+    title="GitHub"
+    icon="github"
+    href="https://github.com/windsornguyen/flash-stu"
+  >
+    View the source code and contribute
+  </Card>
+</CardGroup>
+
+## Citation
+
+If you use Flash STU in your research, please cite:
+
+```bibtex
+@article{flashstu,
+  title={Flash STU: Fast Spectral Transform Units},
+  author={Y. Isabel Liu, Windsor Nguyen, Yagiz Devre, Evan Dogariu, Anirudha Majumdar, Elad Hazan},
+  journal={arXiv preprint arXiv:2409.10489},
+  year={2024},
+  url={https://arxiv.org/abs/2409.10489}
+}
+```
+
+## License
+
+Flash STU is released under the Apache 2.0 License. You can freely use, modify, and distribute the software, even in proprietary products, as long as you include proper attribution, include a copy of the license, and mention any changes made.

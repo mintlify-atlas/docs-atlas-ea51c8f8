@@ -1,0 +1,263 @@
+---
+title: Attention Module
+description: Flash Attention 2 implementation with sliding window and ALiBi positional encoding
+---
+
+## Overview
+
+The `Attention` module implements multi-head self-attention using Flash Attention 2 for efficient computation. It includes sliding window attention, ALiBi (Attention with Linear Biases) positional encoding, and optional attention softcapping.
+
+**Source:** `flash_stu/modules/attention.py`
+
+## Class Definition
+
+```python
+class Attention(nn.Module):
+    def __init__(self, config)
+```
+
+### Initialization Parameters
+
+<ParamField path="config" type="FlashSTUConfig" required>
+  Configuration object with the following attributes:
+  - `n_embd` (int): Embedding dimension (must be divisible by n_heads)
+  - `n_heads` (int): Number of attention heads
+  - `bsz` (int): Batch size
+  - `bias` (bool): Whether to use bias in linear layers
+  - `dropout` (float): Dropout probability (0.0 for no dropout)
+  - `window_size` (int): Sliding window size for local attention
+  - `softcap` (float): Softcap value for attention logits
+  - `torch_dtype` (torch.dtype): Data type for weights
+</ParamField>
+
+**Requirements:** CUDA must be available (enforced via assertion)
+
+## Architecture Components
+
+### Linear Projections
+
+<ResponseField name="c_attn" type="nn.Linear">
+  **Shape:** `(n_embd, 3 * n_embd)`
+  
+  Combined linear projection for Query, Key, and Value. Projects input to 3x embedding dimension, which is then split into Q, K, V.
+</ResponseField>
+
+<ResponseField name="c_proj" type="nn.Linear">
+  **Shape:** `(n_embd, n_embd)`
+  
+  Output projection that transforms concatenated attention heads back to embedding dimension. Has `SCALE_INIT=1` attribute for initialization scaling.
+</ResponseField>
+
+### Attention Configuration
+
+<ResponseField name="n_heads" type="int">
+  Number of attention heads
+</ResponseField>
+
+<ResponseField name="window_size" type="int">
+  Sliding window size for local attention. Tokens can only attend to previous `window_size` tokens.
+</ResponseField>
+
+<ResponseField name="softcap" type="float">
+  Attention logit softcapping value. Caps attention scores to prevent extreme values (from Gemini paper: https://arxiv.org/pdf/2408.00118).
+</ResponseField>
+
+<ResponseField name="alibi_slopes" type="torch.Tensor">
+  ALiBi positional encoding slopes for each attention head. Computed via `_get_alibi_slopes()` based on head count.
+</ResponseField>
+
+<ResponseField name="resid_dropout" type="nn.Dropout">
+  Residual dropout applied after output projection
+</ResponseField>
+
+## Methods
+
+### forward
+
+```python
+def forward(self, x) -> torch.Tensor
+```
+
+Computes multi-head self-attention using Flash Attention 2.
+
+<ParamField path="x" type="torch.Tensor" required>
+  Input tensor with shape `(batch_size, seq_len, n_embd)`
+</ParamField>
+
+**Returns:** `torch.Tensor` with shape `(batch_size, seq_len, n_embd)`
+
+**Source:** `flash_stu/modules/attention.py:59`
+
+#### Processing Steps
+
+1. **QKV Projection:** Projects input through `c_attn` and splits into Q, K, V
+2. **Reshape:** Reshapes Q, K, V to `(bsz, seq_len, n_heads, head_dim)`
+3. **Flash Attention:** Applies efficient attention computation with:
+   - Causal masking (autoregressive)
+   - Sliding window `(window_size, 0)` - attends to left context only
+   - ALiBi slopes for positional encoding
+   - Softcap for stability
+   - Dropout during training
+4. **Output Projection:** Reshapes and projects through `c_proj`
+5. **Residual Dropout:** Applies dropout to output
+
+### _get_alibi_slopes
+
+```python
+def _get_alibi_slopes(self, n_heads: int, interpolation_factor: float = 0.25) -> torch.Tensor
+```
+
+Generates ALiBi slopes for positional encoding.
+
+<ParamField path="n_heads" type="int" required>
+  Number of attention heads
+</ParamField>
+
+<ParamField path="interpolation_factor" type="float">
+  Scaling factor for slopes (default: 0.25, from https://arxiv.org/pdf/2310.13017)
+</ParamField>
+
+**Returns:** `torch.Tensor` with shape `(n_heads,)` containing slopes for each head
+
+**Source:** `flash_stu/modules/attention.py:42`
+
+**Behavior:**
+- If `n_heads` is a power of 2, generates slopes directly
+- Otherwise, uses nearest power of 2 and interpolates extra slopes
+- Slopes are scaled by `interpolation_factor`
+
+### _generate_slopes
+
+```python
+def _generate_slopes(self, n: int) -> list[float]
+```
+
+Generates geometric sequence of slopes for ALiBi.
+
+<ParamField path="n" type="int" required>
+  Number of slopes to generate (must be power of 2)
+</ParamField>
+
+**Returns:** List of `n` slope values
+
+**Source:** `flash_stu/modules/attention.py:38`
+
+## Flash Attention Integration
+
+The module uses the Triton-based Flash Attention 2 implementation:
+
+```python
+from flash_attn import flash_attn_func as fa2
+
+y = fa2(
+    q, k, v,
+    dropout_p=self.dropout if self.training else 0.0,
+    causal=True,
+    window_size=(self.window_size, 0),
+    alibi_slopes=self.alibi_slopes,
+    softcap=self.softcap,
+)
+```
+
+**Parameters:**
+- `dropout_p`: Attention dropout (only during training)
+- `causal=True`: Autoregressive masking
+- `window_size=(window_size, 0)`: Sliding window with left-only context
+- `alibi_slopes`: Per-head positional bias
+- `softcap`: Logit capping for stability
+
+**Reference:** [Flash Attention 2 paper](https://arxiv.org/pdf/2307.08691)
+
+## Sliding Window Mechanism
+
+The sliding window restricts attention to local context:
+
+```python
+window_size=(self.window_size, 0)
+```
+
+- **Left context:** `window_size` tokens (e.g., 1024)
+- **Right context:** 0 tokens (causal)
+- **Effect:** Each token attends to at most `window_size` previous tokens
+- **Benefit:** O(n × window_size) complexity instead of O(n²)
+
+## Softcap Parameter
+
+Softcapping prevents attention logits from growing too large:
+
+```python
+softcap=self.softcap  # e.g., 50.0
+```
+
+**Implementation:** `logits = softcap * tanh(logits / softcap)`
+
+**Benefits:**
+- Prevents numerical instability
+- Smooths attention distribution
+- Improves training stability
+
+**Reference:** [Gemini paper](https://arxiv.org/pdf/2408.00118)
+
+## Usage Example
+
+```python
+import torch
+from flash_stu.config import FlashSTUConfig
+from flash_stu.modules.attention import Attention
+
+# Create configuration
+config = FlashSTUConfig(
+    n_embd=1536,
+    n_heads=8,
+    bsz=4,
+    window_size=1024,
+    softcap=50.0,
+    dropout=0.0,
+    bias=False,
+    torch_dtype=torch.bfloat16
+)
+
+# Initialize attention module
+attn = Attention(config).cuda()
+
+# Forward pass
+batch_size = 4
+seq_len = 2048
+x = torch.randn(batch_size, seq_len, config.n_embd,
+                dtype=torch.bfloat16, device='cuda')
+output = attn(x)  # Shape: (4, 2048, 1536)
+
+# Check ALiBi slopes
+print(f"ALiBi slopes: {attn.alibi_slopes}")  # Shape: (8,)
+```
+
+## ALiBi Positional Encoding
+
+ALiBi (Attention with Linear Biases) adds positional information through learned slopes:
+
+- **No absolute position embeddings** needed
+- **Relative position bias:** Each head gets a unique slope
+- **Extrapolation:** Better generalization to longer sequences
+- **Interpolation factor:** 0.25 for improved performance
+
+**Reference:** [ALiBi paper](https://arxiv.org/pdf/2108.12409)
+
+## Performance Characteristics
+
+- **Memory efficient:** O(n) memory via Flash Attention 2
+- **Compute efficient:** Optimized CUDA kernels
+- **Sliding window:** Reduces complexity for long sequences
+- **Causal masking:** Built into kernel (no explicit mask needed)
+
+## Dependencies
+
+```python
+try:
+    from flash_attn import flash_attn_func as fa2
+except ImportError as e:
+    print(f"Unable to import Triton-based flash attention: {e}")
+```
+
+**Required:** `flash-attn` package with CUDA support
+
+**Installation:** `pip install flash-attn --no-build-isolation`

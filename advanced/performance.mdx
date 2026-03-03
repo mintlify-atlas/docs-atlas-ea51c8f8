@@ -1,0 +1,238 @@
+---
+title: Performance Optimization
+description: Advanced performance optimization techniques for Flash STU
+---
+
+## Overview
+
+Flash STU provides several performance optimization options to maximize training and inference speed. This guide covers key performance considerations and best practices.
+
+## FFT Implementation Selection
+
+### Flash FFT vs PyTorch FFT
+
+Flash STU supports two FFT backends controlled by the `use_flash_fft` parameter in `FlashSTUConfig`:
+
+**Flash FFT** (`use_flash_fft=True`, default)
+- Optimized CUDA kernel implementation from [HazyResearch/flash-fft-conv](https://github.com/HazyResearch/flash-fft-conv)
+- Significantly faster for convolution operations
+- Requires sequence lengths that are powers of 2 (automatically padded)
+- Uses `torch.bfloat16` precision
+- Recommended for production workloads
+
+**PyTorch FFT** (`use_flash_fft=False`)
+- Falls back to `torch.fft.rfft` and `torch.fft.irfft`
+- More flexible with sequence lengths
+- Uses `torch.float32` precision internally
+- Useful for debugging or when Flash FFT is unavailable
+
+<Tip>
+Always use Flash FFT (`use_flash_fft=True`) for training large models. The performance gains are substantial, often 2-3x faster than PyTorch FFT for convolution operations.
+</Tip>
+
+<Warning>
+If Flash FFT installation fails, the model will automatically fall back to PyTorch FFT with a warning message. Check your CUDA installation if this occurs.
+</Warning>
+
+See implementation in `flash_stu/modules/stu.py:28-32` and `flash_stu/utils/stu_utils.py:62-98`.
+
+## Low-Rank Approximation
+
+### Understanding `use_approx`
+
+The `use_approx` parameter (default: `True`) enables a low-rank approximation that significantly reduces memory usage and computation:
+
+**With Approximation** (`use_approx=True`)
+- Parameters: `M_inputs` (d_in × d_out) and `M_filters` (K × d_in)
+- Contracts inputs and filters before convolution
+- More memory-efficient: fewer parameters to store
+- Faster forward pass due to reduced tensor operations
+- Recommended for most use cases
+
+**Without Approximation** (`use_approx=False`)
+- Parameters: `M_phi_plus` (K × d_in × d_out) and optionally `M_phi_minus`
+- Performs full convolution first, then contracts
+- Higher memory usage: stores full 3D tensors
+- More expressive but computationally expensive
+- Use only when maximum model capacity is required
+
+<Tip>
+Start with `use_approx=True` for most applications. Only disable it if you have sufficient memory and need the additional model capacity for complex tasks.
+</Tip>
+
+Parameter counts comparison (with `n_embd=1536`, `num_eigh=24`):
+- With approximation: 1536 × 1536 + 24 × 1536 ≈ 2.4M parameters per STU layer
+- Without approximation: 24 × 1536 × 1536 × 2 ≈ 113M parameters per STU layer
+
+See implementation in `flash_stu/modules/stu.py:33-47` and `flash_stu/modules/stu.py:49-79`.
+
+## Hankel Matrix Optimization
+
+### The `use_hankel_L` Option
+
+The `use_hankel_L` parameter (default: `False`) controls which Hankel matrix formulation is used:
+
+**Standard Hankel** (`use_hankel_L=False`)
+- Formula: `Z = 2.0 / (i_plus_j³ - i_plus_j)`
+- Uses both `M_phi_plus` and `M_phi_minus` parameters
+- Computes `spectral_plus + spectral_minus`
+- More parameters but potentially more expressive
+
+**Hankel-L Variant** (`use_hankel_L=True`)
+- Formula: `Z = sgn * (8.0 / denom)` where `sgn = (-1)^(i+j-2) + 1`
+- Only uses `M_phi_plus` parameter
+- Computes only `spectral_plus`
+- ~50% fewer parameters in non-approximate mode
+- Faster computation (single spectral component)
+
+<Tip>
+Use `use_hankel_L=True` to reduce memory usage and improve speed when using `use_approx=False`. The performance difference is minimal with `use_approx=True`.
+</Tip>
+
+See implementation in `flash_stu/utils/stu_utils.py:10-23` and `flash_stu/modules/stu.py:79`.
+
+## Torch Compile Considerations
+
+### Current Limitations
+
+PyTorch's `torch.compile` provides JIT compilation for performance improvements, but has known limitations with Flash STU:
+
+<Warning>
+**Important**: `torch.compile` currently does not have great support for distributed wrapper modules like DDP or FSDP. If you encounter errors during training, try disabling `torch.compile`.
+</Warning>
+
+Common issues:
+- Graph breaks with Flash Attention and Flash FFT kernels
+- Incompatibility with FSDP's parameter sharding
+- Runtime errors with custom CUDA kernels
+
+**Workarounds:**
+
+1. **Disable compilation for distributed training:**
+   ```python
+   # Do not use torch.compile with FSDP
+   model = FlashSTU(config, phi)
+   model = FSDP(model)  # Without torch.compile wrapper
+   ```
+
+2. **Selective compilation:**
+   ```python
+   # Compile only specific submodules
+   model.mlp = torch.compile(model.mlp)
+   ```
+
+3. **Single-GPU inference:**
+   ```python
+   # torch.compile works better for single-GPU inference
+   model = torch.compile(FlashSTU(config, phi))
+   ```
+
+For more information, see the [torch.compile informal manual](https://docs.google.com/document/d/1y5CRfMLdwEoF1nTk9q8qEu1mgMUuUtvhklPKJ2emLU8/edit#heading=h.ivdr7fmrbeab).
+
+Reference: README.md:125
+
+## Memory Optimization with FSDP
+
+### Fully Sharded Data Parallel
+
+Flash STU supports FSDP (Fully Sharded Data Parallel) for training large models across multiple GPUs:
+
+**Key Benefits:**
+- Shards model parameters, gradients, and optimizer states across GPUs
+- Dramatically reduces per-GPU memory usage
+- Enables training models larger than single-GPU memory
+- Supports mixed precision training with `torch.bfloat16`
+
+**Configuration Example:**
+
+```python
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+from torch.distributed.fsdp import MixedPrecision
+import torch
+
+# Configure mixed precision
+mp_policy = MixedPrecision(
+    param_dtype=torch.bfloat16,
+    reduce_dtype=torch.bfloat16,
+    buffer_dtype=torch.bfloat16,
+)
+
+# Wrap model with FSDP
+model = FlashSTU(config, phi)
+model = FSDP(
+    model,
+    mixed_precision=mp_policy,
+    device_id=torch.cuda.current_device(),
+)
+```
+
+<Tip>
+Use FSDP instead of DDP when training models with >1B parameters. FSDP's memory efficiency allows you to train much larger models on the same hardware.
+</Tip>
+
+<Warning>
+Do not use `torch.compile` with FSDP-wrapped models. This is a known PyTorch limitation and will cause runtime errors.
+</Warning>
+
+**Memory Comparison (26-layer, 1536-dim model):**
+- DDP: ~6GB per GPU (full model replica)
+- FSDP: ~1.5GB per GPU with 4-way sharding
+
+## Additional Performance Tips
+
+### Batch Size Tuning
+
+- Larger batch sizes improve GPU utilization
+- Flash FFT performance scales well with batch size
+- Monitor GPU memory usage with `torch.cuda.max_memory_allocated()`
+
+### Sequence Length Optimization
+
+Flash FFT pads sequences to the nearest power of 2:
+- Prefer sequence lengths that are already powers of 2 (1024, 2048, 4096, 8192)
+- Example: `seq_len=8192` requires no padding, while `seq_len=6000` pads to 8192
+
+See `flash_stu/utils/numerics.py` for padding logic.
+
+### Gradient Checkpointing
+
+For very deep models, enable gradient checkpointing to trade computation for memory:
+
+```python
+from torch.utils.checkpoint import checkpoint
+
+# In model forward pass
+for layer in self.layers:
+    x = checkpoint(layer, x, use_reentrant=False)
+```
+
+### Data Type Selection
+
+Flash STU defaults to `torch.bfloat16` (config.py:27):
+- Better numerical stability than `float16`
+- Supported by modern GPUs (A100, H100)
+- Matches Flash FFT and Flash Attention precision
+- Use `float32` only for debugging numerical issues
+
+## Profiling and Benchmarking
+
+Profile your model to identify bottlenecks:
+
+```python
+import torch.profiler as profiler
+
+with profiler.profile(
+    activities=[profiler.ProfilerActivity.CPU, profiler.ProfilerActivity.CUDA],
+    record_shapes=True,
+) as prof:
+    output = model(input_ids)
+    loss.backward()
+
+print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=10))
+```
+
+Monitor key metrics:
+- Forward pass time
+- Backward pass time
+- GPU memory usage
+- GPU utilization percentage
