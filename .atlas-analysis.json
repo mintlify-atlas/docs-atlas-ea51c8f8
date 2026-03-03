@@ -1,0 +1,101 @@
+{
+  "projectType": "ai-ml",
+  "projectName": "Flash STU",
+  "projectDescription": "Fast PyTorch implementation of Spectral Transform Units for efficient sequence modeling with long-range dependencies.",
+  "theme": "aspen",
+  "primaryColor": "#4F46E5",
+  "lightColor": "#818CF8",
+  "darkColor": "#3730A3",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "installation",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/architecture",
+              "concepts/spectral-filtering",
+              "concepts/flash-optimizations"
+            ]
+          },
+          {
+            "group": "Training",
+            "pages": [
+              "training/configuration",
+              "training/distributed-training",
+              "training/example-training"
+            ]
+          },
+          {
+            "group": "Advanced",
+            "pages": [
+              "advanced/performance",
+              "advanced/custom-configs"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Core",
+            "pages": [
+              "api/model",
+              "api/config"
+            ]
+          },
+          {
+            "group": "Modules",
+            "pages": [
+              "api/modules/stu",
+              "api/modules/attention",
+              "api/modules/swiglu"
+            ]
+          },
+          {
+            "group": "Layers",
+            "pages": [
+              "api/layers/stu-layer",
+              "api/layers/attention-layer"
+            ]
+          },
+          {
+            "group": "Utilities",
+            "pages": [
+              "api/utils/spectral-filters",
+              "api/utils/numerics",
+              "api/utils/training"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Fast convolutions using Flash FFT for efficient spectral filtering",
+    "Optimized local attention with sliding window Flash Attention",
+    "Distributed training support with DDP and FSDP",
+    "Configurable architecture for sequence modeling tasks",
+    "Low-rank approximation options for memory efficiency"
+  ],
+  "publicApiSurface": [
+    "FlashSTU",
+    "FlashSTUConfig",
+    "STU",
+    "get_spectral_filters",
+    "STULayer",
+    "AttentionLayer",
+    "Attention",
+    "MLP"
+  ]
+}
